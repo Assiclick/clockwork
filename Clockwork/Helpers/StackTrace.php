@@ -13,8 +13,9 @@ class StackTrace
 	{
 		$backtraceOptions = isset($options['arguments'])
 			? DEBUG_BACKTRACE_PROVIDE_OBJECT : DEBUG_BACKTRACE_PROVIDE_OBJECT | DEBUG_BACKTRACE_IGNORE_ARGS;
+		$limit = isset($options['limit']) ? $options['limit'] : 0;
 
-		return static::from(debug_backtrace($backtraceOptions));
+		return static::from(debug_backtrace($backtraceOptions, $limit));
 	}
 
 	public static function from(array $trace)
@@ -22,9 +23,11 @@ class StackTrace
 		$basePath = static::resolveBasePath();
 		$vendorPath = static::resolveVendorPath();
 
-		return new static(array_map(function ($frame) use ($basePath, $vendorPath) {
-			return new StackFrame($frame, $basePath, $vendorPath);
-		}, $trace), $basePath, $vendorPath);
+		return new static(array_map(function ($frame, $index) use ($basePath, $vendorPath, $trace) {
+			return new StackFrame(
+				static::fixCallUserFuncFrame($frame, $trace, $index), $basePath, $vendorPath
+			);
+		}, $trace, array_keys($trace)), $basePath, $vendorPath);
 	}
 
 	public function __construct(array $frames, $basePath, $vendorPath)
@@ -50,11 +53,22 @@ class StackTrace
 		}
 	}
 
+	public function last($filter = null)
+	{
+		if (! $filter) return $this->frames[count($this->frames) - 1];
+
+		if ($filter instanceof StackFilter) $filter = $filter->closure();
+
+		foreach (array_reverse($this->frames) as $frame) {
+			if ($filter($frame)) return $frame;
+		}
+	}
+
 	public function filter($filter = null)
 	{
 		if ($filter instanceof StackFilter) $filter = $filter->closure();
 
-		return $this->copy(array_filter($this->frames, $filter));
+		return $this->copy(array_values(array_filter($this->frames, $filter)));
 	}
 
 	public function skip($count = null)
@@ -83,5 +97,19 @@ class StackTrace
 	protected static function resolveVendorPath()
 	{
 		return static::resolveBasePath() . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR;
+	}
+
+	protected static function fixCallUserFuncFrame($frame, array $trace, $index)
+	{
+		if (isset($frame['file'])) return $frame;
+
+		$nextFrame = isset($trace[$index + 1]) ? $trace[$index + 1] : null;
+
+		if (! $nextFrame || ! in_array($nextFrame['function'], [ 'call_user_func', 'call_user_func_array' ])) return $frame;
+
+		$frame['file'] = $nextFrame['file'];
+		$frame['line'] = $nextFrame['line'];
+
+		return $frame;
 	}
 }
